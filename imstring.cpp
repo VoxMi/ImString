@@ -138,35 +138,55 @@ ImString& ImString::operator=(const char* str)
 {
     if(str == nullptr)
     {
-        SSO.Data[0] = '\0';
-        SSO.Size = 0;
+        clear();
         return *this;
     }
 
-    char* old_heap_data = is_heap() ? Heap.Data : nullptr;
-
     size_t len = strlen(str);
+
+    // Fits in SSO
     if(len < LayoutSSO::SSO_CAPACITY)
     {
-        memcpy(SSO.Data, str, len);
-        SSO.Data[len] = '\0';
-        SSO.Size = (unsigned char)(len);
+        if(is_heap())
+        {
+            // Transition from Heap to SSO
+            char* old_heap_data = Heap.Data;
+            memcpy(SSO.Data, str, len);
+            SSO.Data[len] = '\0';
+            SSO.Size = (unsigned char)(len);
+            clear_heap_flag(); // Switch mode to SSO
+            IM_FREE(old_heap_data);
+        }
+        // Already in SSO
+        else
+        {
+            memcpy(SSO.Data, str, len);
+            SSO.Data[len] = '\0';
+            SSO.Size = (unsigned char)(len);
+        }
+
+        return *this;
     }
-    else
+
+    // Needs Heap. Reuse existing buffer.
+    if(is_heap() && len <= get_heap_capacity())
     {
-        size_t alloc_size = IM_PLATFORM_ALIGN_SIZE(len + 1);
-        Heap.Data = (char*)(IM_ALLOC(alloc_size));
-        IM_ASSERT(Heap.Data != nullptr);
         memcpy(Heap.Data, str, len);
         Heap.Data[len] = '\0';
         Heap.Size = len;
-
-        set_heap_capacity(alloc_size - 1);
+        return *this;
     }
 
-    if(old_heap_data)
-        IM_FREE(old_heap_data);
-
+    // Need Heap. New buffer allocation.
+    if(is_heap() && Heap.Data)
+        IM_FREE(Heap.Data);
+    size_t alloc_size = IM_PLATFORM_ALIGN_SIZE(len + 1);
+    Heap.Data = (char*)(IM_ALLOC(alloc_size));
+    IM_ASSERT(Heap.Data != nullptr);
+    memcpy(Heap.Data, str, len);
+    Heap.Data[len] = '\0';
+    Heap.Size = len;
+    set_heap_capacity(alloc_size - 1);
     return *this;
 }
 
@@ -184,6 +204,7 @@ ImString& ImString::operator=(ImString&& other) noexcept
             memcpy(SSO.Data, other.SSO.Data, other.SSO.Size);
             SSO.Data[other.SSO.Size] = '\0';
             SSO.Size = other.SSO.Size;
+            clear_heap_flag();
         }
 
         // Reset source
@@ -197,25 +218,52 @@ ImString& ImString::operator=(const ImString& other)
 {
     if(this != &other)
     {
-        if(is_heap() && Heap.Data)
-            IM_FREE(Heap.Data);
+        size_t len = other.size();
 
+        // Fits in SSO
         if(other.is_sso())
         {
-            memcpy(SSO.Data, other.SSO.Data, other.SSO.Size);
-            SSO.Data[other.SSO.Size] = '\0';
-            SSO.Size = other.SSO.Size;
+            if(is_heap() && Heap.Data)
+            {
+                // Transition from Heap to SSO
+                char* old_heap_data = Heap.Data;
+                memcpy(SSO.Data, other.SSO.Data, len);
+                SSO.Data[len] = '\0';
+                SSO.Size = (unsigned char)(len);
+                clear_heap_flag();
+                IM_FREE(old_heap_data);
+            }
+            // Already in SSO
+            else
+            {
+                memcpy(SSO.Data, other.SSO.Data, len);
+                SSO.Data[len] = '\0';
+                SSO.Size = (unsigned char)(len);
+            }
         }
+        // Needs Heap
         else
         {
-            size_t alloc_size = IM_PLATFORM_ALIGN_SIZE(other.Heap.Size + 1);
-            Heap.Data = (char*)(IM_ALLOC(alloc_size));
-            IM_ASSERT(Heap.Data != nullptr);
-            memcpy(Heap.Data, other.Heap.Data, other.Heap.Size);
-            Heap.Data[other.Heap.Size] = '\0';
-            Heap.Size = other.Heap.Size;
-
-            set_heap_capacity(alloc_size - 1);
+            // Reuse existing buffer
+            if(is_heap() && len <= get_heap_capacity())
+            {
+                memcpy(Heap.Data, other.Heap.Data, len);
+                Heap.Data[len] = '\0';
+                Heap.Size = len;
+            }
+            // New buffer allocation
+            else
+            {
+                if(is_heap() && Heap.Data)
+                    IM_FREE(Heap.Data);
+                size_t alloc_size = IM_PLATFORM_ALIGN_SIZE(len + 1);
+                Heap.Data = (char*)(IM_ALLOC(alloc_size));
+                IM_ASSERT(Heap.Data != nullptr);
+                memcpy(Heap.Data, other.Heap.Data, len);
+                Heap.Data[len] = '\0';
+                Heap.Size = len;
+                set_heap_capacity(alloc_size - 1);
+            }
         }
     }
 
@@ -295,6 +343,7 @@ void ImString::shrink_to_fit()
         memcpy(SSO.Data, data_ptr, data_size);
         SSO.Data[data_size] = '\0';
         SSO.Size = (unsigned char)(data_size);
+        clear_heap_flag();
         IM_FREE(data_ptr);
     }
     else
